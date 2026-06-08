@@ -104,9 +104,14 @@ export default async function handler(req, res) {
     if (total === 0) {
       phrase += `Aucun bateau déclaré.`;
     } else {
-      if (ecluse.montants > 0) phrase += `${ecluse.montants} bateau${ecluse.montants > 1 ? 'x' : ''} montant${ecluse.montants > 1 ? 's' : ''}. `;
-      if (ecluse.avalants > 0) phrase += `${ecluse.avalants} bateau${ecluse.avalants > 1 ? 'x' : ''} avalant${ecluse.avalants > 1 ? 's' : ''}. `;
-      phrase += `Durée estimée : ${duree}.`;
+      phrase += `${total} bateau${total > 1 ? 'x' : ''} au total. `;
+      phrase += `Durée estimée : ${duree}. `;
+      const dureeMin = total <= 4 ? 15 : total <= 8 ? 20 : total <= 14 ? 28 : total <= 24 ? 40 : 60;
+      const minFin = ecluse.heure * 60 + 10 + dureeMin;
+      const hFin = Math.floor(minFin / 60) % 24;
+      const mFin = minFin % 60;
+      const heureFin = hFin + 'h' + (mFin > 0 ? String(mFin).padStart(2, '0') : '');
+      phrase += `Barrières ouvertes vers ${heureFin}.`;
     }
 
     return res.status(200).send(phrase);
