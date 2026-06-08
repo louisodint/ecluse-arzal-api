@@ -4,7 +4,6 @@ export default async function handler(req, res) {
 
   try {
     const now = new Date();
-    // Fuseau Europe/Paris (UTC+2 été, UTC+1 hiver)
     const parisTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
     const heureLocale = parisTime.getHours();
 
@@ -15,37 +14,65 @@ export default async function handler(req, res) {
 
     const url = `https://www.passeportecluse-arzal-camoel.com/?date=${dateStr}`;
     const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' }
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'fr-FR,fr;q=0.9'
+      }
     });
     const html = await response.text();
 
-    // Extraire le bloc tableau entre "Avalante" et "Profondeur"
-    const match = html.match(/Avalante[\s\S]*?(\d{2}h[\s\S]+?)Profondeur/);
-    if (!match) {
-      return res.status(200).send("Impossible de récupérer les horaires de l'écluse d'Arzal.");
-    }
-
-    const bloc = match[1];
-    const lignes = bloc.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-
+    // Extraire toutes les heures et leurs données depuis le HTML brut
+    // Format dans le HTML : <td>08h</td> ... <td>3.33</td> ... <td>2</td> ... <td>2</td>
     const ecluses = [];
-    for (let i = 0; i < lignes.length; i++) {
-      if (/^\d{2}h$/.test(lignes[i])) {
-        const heure = parseInt(lignes[i]);
-        const cote = lignes[i + 1];
-        const montants = parseInt(lignes[i + 2]);
-        const avalants = parseInt(lignes[i + 3]);
-        if (cote && !isNaN(montants) && !isNaN(avalants)) {
-          ecluses.push({ heure, heureStr: lignes[i], montants, avalants });
+    
+    // Chercher les cellules td contenant les heures
+    const tdMatches = html.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
+    const cellules = tdMatches.map(td => td.replace(/<[^>]+>/g, '').trim());
+    
+    for (let i = 0; i < cellules.length; i++) {
+      if (/^\d{2}h$/.test(cellules[i])) {
+        const heure = parseInt(cellules[i]);
+        const cote = cellules[i + 1];
+        const montants = parseInt(cellules[i + 2]);
+        const avalants = parseInt(cellules[i + 3]);
+        if (cote && !isNaN(montants) && !isNaN(avalants) && parseFloat(cote) > 0) {
+          ecluses.push({ heure, heureStr: cellules[i], montants, avalants });
         }
       }
     }
 
+    // Si pas de résultat avec les td, essayer avec le texte brut
     if (ecluses.length === 0) {
-      return res.status(200).send("Aucune éclusée trouvée pour aujourd'hui.");
+      const texte = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, '\n');
+      const lignes = texte.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      
+      for (let i = 0; i < lignes.length; i++) {
+        if (/^\d{2}h$/.test(lignes[i])) {
+          const heure = parseInt(lignes[i]);
+          // Chercher côte et bateaux dans les lignes suivantes (ignorer les lignes vides/parasites)
+          const suivantes = [];
+          for (let j = i + 1; j < lignes.length && suivantes.length < 4; j++) {
+            if (/^[\d.]+$/.test(lignes[j])) suivantes.push(lignes[j]);
+          }
+          if (suivantes.length >= 3) {
+            const montants = parseInt(suivantes[1]);
+            const avalants = parseInt(suivantes[2]);
+            if (!isNaN(montants) && !isNaN(avalants)) {
+              ecluses.push({ heure, heureStr: lignes[i], montants, avalants });
+            }
+          }
+        }
+      }
     }
 
-    // Trouver l'éclusée courante (la plus récente dont l'heure <= heure actuelle)
+    // Debug : renvoyer les infos si toujours vide
+    if (ecluses.length === 0) {
+      const extrait = html.substring(0, 2000).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      return res.status(200).send(`DEBUG date=${dateStr} heure=${heureLocale} extrait=${extrait}`);
+    }
+
+    // Trouver l'éclusée courante
     let ecluse = null;
     let type = 'courante';
 
@@ -55,20 +82,9 @@ export default async function handler(req, res) {
         break;
       }
     }
+    if (!ecluse) { ecluse = ecluses[0]; type = 'prochaine'; }
+    if (heureLocale > ecluses[ecluses.length - 1].heure) { ecluse = ecluses[ecluses.length - 1]; type = 'derniere'; }
 
-    // Pas encore d'éclusée passée → prendre la première
-    if (!ecluse) {
-      ecluse = ecluses[0];
-      type = 'prochaine';
-    }
-
-    // Après la dernière éclusée du jour
-    if (heureLocale > ecluses[ecluses.length - 1].heure) {
-      ecluse = ecluses[ecluses.length - 1];
-      type = 'derniere';
-    }
-
-    // Estimation durée
     const total = ecluse.montants + ecluse.avalants;
     let duree;
     if (total <= 4) duree = '15 minutes';
