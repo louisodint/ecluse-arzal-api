@@ -1,9 +1,3 @@
 {
-  "version": 2,
-  "routes": [
-    {
-      "src": "/api/ecluse",
-      "dest": "/api/ecluse.js"
-    }
-  ]
+  "version": 2
 }

@@ -120,8 +120,6 @@ module.exports = async (req, res) => {
       phrase = `Éclusée de ${heureTexte}. `;
     }
 
-    phrase += `Côte marine : ${ecluse.cote} mètres. `;
-
     if (total === 0) {
       phrase += `Aucun bateau déclaré. `;
     } else {
