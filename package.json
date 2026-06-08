@@ -1,0 +1,6 @@
+{
+  "name": "ecluse-arzal-api",
+  "version": "1.0.0",
+  "description": "API horaires écluse Arzal-Camoël pour Raccourcis iOS",
+  "main": "api/ecluse.js"
+}
