@@ -1,25 +1,40 @@
+const MESSAGE_ERREUR = "Impossible de récupérer les horaires de l'écluse pour le moment.";
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
-  try {
-    const now = new Date();
-    const parisTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
-    const heureLocale = parisTime.getHours();
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return res.status(405).send('Méthode non autorisée');
+  }
 
-    const yyyy = parisTime.getFullYear();
-    const mm = String(parisTime.getMonth() + 1).padStart(2, '0');
-    const dd = String(parisTime.getDate()).padStart(2, '0');
-    const dateStr = `${yyyy}-${mm}-${dd}`;
+  // Réponse mise en cache par le CDN Vercel : le site de l'écluse n'est
+  // sollicité qu'une fois toutes les 2 minutes quel que soit le trafic
+  res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=600');
+
+  try {
+    const parts = new Intl.DateTimeFormat('fr-FR', {
+      timeZone: 'Europe/Paris',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date());
+    const p = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+    const heureLocale = parseInt(p.hour, 10);
+    const dateStr = `${p.year}-${p.month}-${p.day}`;
 
     const url = `https://www.passeportecluse-arzal-camoel.com/?date=${dateStr}`;
     const response = await fetch(url, {
-      headers: { 
+      signal: AbortSignal.timeout(5000),
+      headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'fr-FR,fr;q=0.9'
       }
     });
+    if (!response.ok) {
+      console.error(`Réponse ${response.status} du site de l'écluse pour ${url}`);
+      return res.status(200).send(MESSAGE_ERREUR);
+    }
     const html = await response.text();
 
     // Extraire toutes les heures et leurs données depuis le HTML brut
@@ -66,10 +81,12 @@ export default async function handler(req, res) {
       }
     }
 
-    // Debug : renvoyer les infos si toujours vide
+    // Parsing vide : le site a probablement changé de structure.
+    // On logue l'extrait côté serveur (visible dans les logs Vercel) sans le renvoyer au client.
     if (ecluses.length === 0) {
       const extrait = html.substring(0, 2000).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-      return res.status(200).send(`DEBUG date=${dateStr} heure=${heureLocale} extrait=${extrait}`);
+      console.error(`Parsing vide date=${dateStr} heure=${heureLocale} extrait=${extrait}`);
+      return res.status(200).send(MESSAGE_ERREUR);
     }
 
     // Trouver l'éclusée courante
@@ -135,6 +152,7 @@ export default async function handler(req, res) {
     return res.status(200).send(phrase);
 
   } catch (err) {
-    return res.status(200).send(`Erreur : ${err.message}`);
+    console.error('Erreur lors de la récupération des horaires :', err);
+    return res.status(200).send(MESSAGE_ERREUR);
   }
 }
