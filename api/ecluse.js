@@ -114,6 +114,24 @@ export default async function handler(req, res) {
       phrase += `Barrières ouvertes vers ${heureFin}.`;
     }
 
+    // Ajouter l'éclusée suivante (heure + nombre de bateaux)
+    if (type === 'courante') {
+      const idx = ecluses.indexOf(ecluse);
+      const suivante = ecluses[idx + 1];
+      if (suivante) {
+        const totalSuivante = suivante.montants + suivante.avalants;
+        const hS = suivante.heure;
+        const heureSuivanteTexte = `${hS} heure${hS > 1 ? 's' : ''}`;
+        if (totalSuivante === 0) {
+          phrase += ` Prochaine éclusée à ${heureSuivanteTexte}, aucun bateau déclaré.`;
+        } else {
+          phrase += ` Prochaine éclusée à ${heureSuivanteTexte} avec ${totalSuivante} bateau${totalSuivante > 1 ? 'x' : ''}.`;
+        }
+      } else {
+        phrase += ` C'était la dernière éclusée du jour.`;
+      }
+    }
+
     return res.status(200).send(phrase);
 
   } catch (err) {
