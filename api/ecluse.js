@@ -37,48 +37,45 @@ export default async function handler(req, res) {
     }
     const html = await response.text();
 
-    // Extraire toutes les heures et leurs données depuis le HTML brut
-    // Format dans le HTML : <td>08h</td> ... <td>3.33</td> ... <td>2</td> ... <td>2</td>
+    // Extraire chaque éclusée depuis le HTML, ligne de tableau par ligne de tableau.
+    // Structure réelle du site (une <tr> par créneau) :
+    //   <th scope=row>08h</th>          → l'heure est dans un <th>, pas un <td>
+    //   <td>4.15</td>                   → côte marine
+    //   soit deux <td> (montante / avalante) contenant un bouton avec le nombre de bateaux,
+    //   soit un seul <td colspan="2">…Ecluse annulée…</td> quand l'éclusée est annulée.
     const ecluses = [];
-    
-    // Chercher les cellules td contenant les heures
-    const tdMatches = html.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
-    const cellules = tdMatches.map(td => td.replace(/<[^>]+>/g, '').trim());
-    
-    for (let i = 0; i < cellules.length; i++) {
-      if (/^\d{2}h$/.test(cellules[i])) {
-        const heure = parseInt(cellules[i]);
-        const cote = cellules[i + 1];
-        const montants = parseInt(cellules[i + 2]);
-        const avalants = parseInt(cellules[i + 3]);
-        if (cote && !isNaN(montants) && !isNaN(avalants) && parseFloat(cote) > 0) {
-          ecluses.push({ heure, heureStr: cellules[i], montants, avalants });
-        }
-      }
-    }
 
-    // Si pas de résultat avec les td, essayer avec le texte brut
-    if (ecluses.length === 0) {
-      const texte = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, '\n');
-      const lignes = texte.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-      
-      for (let i = 0; i < lignes.length; i++) {
-        if (/^\d{2}h$/.test(lignes[i])) {
-          const heure = parseInt(lignes[i]);
-          // Chercher côte et bateaux dans les lignes suivantes (ignorer les lignes vides/parasites)
-          const suivantes = [];
-          for (let j = i + 1; j < lignes.length && suivantes.length < 4; j++) {
-            if (/^[\d.]+$/.test(lignes[j])) suivantes.push(lignes[j]);
-          }
-          if (suivantes.length >= 3) {
-            const montants = parseInt(suivantes[1]);
-            const avalants = parseInt(suivantes[2]);
-            if (!isNaN(montants) && !isNaN(avalants)) {
-              ecluses.push({ heure, heureStr: lignes[i], montants, avalants });
-            }
-          }
-        }
+    // Nombre de bateaux d'une cellule : texte du 1er <a>/<button> (le nombre précède
+    // toujours le contenu du modal). Renvoie 0 si aucun nombre exploitable.
+    const nombreBateaux = (cellHtml) => {
+      if (!cellHtml) return 0;
+      const m = cellHtml.match(/<(?:a|button)[^>]*>([\s\S]*?)<\/(?:a|button)>/i);
+      if (!m) return 0;
+      const n = parseInt(m[1].replace(/<[^>]+>/g, ' ').trim(), 10);
+      return isNaN(n) ? 0 : n;
+    };
+
+    const lignesTableau = html.split(/<tr[\s>]/i).slice(1);
+    for (const ligne of lignesTableau) {
+      const heureMatch = ligne.match(/<th[^>]*>\s*(\d{1,2})\s*h\s*<\/th>/i);
+      if (!heureMatch) continue;
+      const heure = parseInt(heureMatch[1], 10);
+      const heureStr = `${String(heure).padStart(2, '0')}h`;
+
+      const tds = ligne.match(/<td[^>]*>[\s\S]*?<\/td>/gi) || [];
+      const cote = parseFloat((tds[0] || '').replace(/<[^>]+>/g, ' ').replace(',', '.').trim());
+
+      // Une éclusée annulée n'a pas de colonnes montante/avalante : on la garde dans la
+      // timeline mais marquée comme annulée, sans jamais lui inventer de bateaux.
+      if (/annul/i.test(ligne)) {
+        ecluses.push({ heure, heureStr, montants: 0, avalants: 0, annulee: true });
+        continue;
       }
+
+      if (isNaN(cote) || cote <= 0) continue;
+      const montants = nombreBateaux(tds[1]);
+      const avalants = nombreBateaux(tds[2]);
+      ecluses.push({ heure, heureStr, montants, avalants, annulee: false });
     }
 
     // Parsing vide : le site a probablement changé de structure.
@@ -89,18 +86,50 @@ export default async function handler(req, res) {
       return res.status(200).send(MESSAGE_ERREUR);
     }
 
-    // Trouver l'éclusée courante
-    let ecluse = null;
+    // Prochaine éclusée non annulée strictement après l'index donné
+    const prochaineNonAnnulee = (from) => {
+      for (let i = from + 1; i < ecluses.length; i++) {
+        if (!ecluses[i].annulee) return ecluses[i];
+      }
+      return null;
+    };
+
+    // Trouver l'éclusée courante (créneau correspondant à l'heure locale)
+    let idx = -1;
     let type = 'courante';
 
     for (let i = ecluses.length - 1; i >= 0; i--) {
-      if (ecluses[i].heure <= heureLocale) {
-        ecluse = ecluses[i];
-        break;
-      }
+      if (ecluses[i].heure <= heureLocale) { idx = i; break; }
     }
-    if (!ecluse) { ecluse = ecluses[0]; type = 'prochaine'; }
-    if (heureLocale > ecluses[ecluses.length - 1].heure) { ecluse = ecluses[ecluses.length - 1]; type = 'derniere'; }
+    if (idx === -1) { idx = 0; type = 'prochaine'; }
+    if (heureLocale > ecluses[ecluses.length - 1].heure) { idx = ecluses.length - 1; type = 'derniere'; }
+
+    const ecluse = ecluses[idx];
+    const h = ecluse.heure;
+    const heureTexte = `${h} heure${h > 1 ? 's' : ''}`;
+
+    // Créneau courant annulé : on l'annonce et on renvoie vers la prochaine éclusée qui a lieu.
+    if (ecluse.annulee) {
+      let phrase;
+      if (type === 'prochaine') phrase = `Prochaine éclusée à ${heureTexte} annulée. `;
+      else if (type === 'derniere') phrase = `Dernière éclusée du jour à ${heureTexte} annulée. `;
+      else phrase = `Éclusée de ${heureTexte} annulée. `;
+
+      const suivante = prochaineNonAnnulee(idx);
+      if (suivante) {
+        const totalSuivante = suivante.montants + suivante.avalants;
+        const hS = suivante.heure;
+        const heureSuivanteTexte = `${hS} heure${hS > 1 ? 's' : ''}`;
+        if (totalSuivante === 0) {
+          phrase += `Prochaine éclusée à ${heureSuivanteTexte}, aucun bateau déclaré.`;
+        } else {
+          phrase += `Prochaine éclusée à ${heureSuivanteTexte} avec ${totalSuivante} bateau${totalSuivante > 1 ? 'x' : ''}.`;
+        }
+      } else {
+        phrase += `Plus d'éclusée prévue aujourd'hui.`;
+      }
+      return res.status(200).send(phrase);
+    }
 
     const total = ecluse.montants + ecluse.avalants;
     let duree;
@@ -109,9 +138,6 @@ export default async function handler(req, res) {
     else if (total <= 14) duree = '25 à 30 minutes';
     else if (total <= 24) duree = '35 à 45 minutes';
     else duree = '50 à 70 minutes';
-
-    const h = ecluse.heure;
-    const heureTexte = `${h} heure${h > 1 ? 's' : ''}`;
 
     let phrase = '';
     if (type === 'prochaine') phrase = `Prochaine éclusée à ${heureTexte}. `;
@@ -131,10 +157,9 @@ export default async function handler(req, res) {
       phrase += `Barrières ouvertes vers ${heureFin}.`;
     }
 
-    // Ajouter l'éclusée suivante (heure + nombre de bateaux)
+    // Ajouter l'éclusée suivante (heure + nombre de bateaux), en sautant les annulées
     if (type === 'courante') {
-      const idx = ecluses.indexOf(ecluse);
-      const suivante = ecluses[idx + 1];
+      const suivante = prochaineNonAnnulee(idx);
       if (suivante) {
         const totalSuivante = suivante.montants + suivante.avalants;
         const hS = suivante.heure;
